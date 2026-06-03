@@ -1,20 +1,26 @@
 .PHONY: run-api run-worker build migrate-up migrate-down tidy
 
+include .env
+export
+
 run-api:
-	go run cmd/api/main.go
+	GOTOOLCHAIN=go1.22.2 go run cmd/api/main.go
 
 run-worker:
-	go run cmd/worker/main.go
+	GOTOOLCHAIN=go1.22.2 go run cmd/worker/main.go
 
 build:
-	go build -o bin/api cmd/api/main.go
-	go build -o bin/worker cmd/worker/main.go
+	GOTOOLCHAIN=go1.22.2 go build -o bin/api cmd/api/main.go
+	GOTOOLCHAIN=go1.22.2 go build -o bin/worker cmd/worker/main.go
 
 migrate-up:
 	migrate -path migrations -database "${POSTGRES_URL}" up
 
 migrate-down:
 	migrate -path migrations -database "${POSTGRES_URL}" down
+
+test:
+	GOTOOLCHAIN=go1.22.2 go test ./... -v -count=1
 
 tidy:
 	GOTOOLCHAIN=go1.22.2 go mod tidy
