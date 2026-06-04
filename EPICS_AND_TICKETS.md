@@ -323,3 +323,23 @@ Handle unresponsive or temporarily unavailable developer webhook servers.
 - A failed webhook delivery does NOT change the `upload_job` status — the job is still `success` or `failed` regardless
 - `attempt_count` and `last_attempted_at` are updated on every attempt
 - Developer can query `GET /webhooks/deliveries/:job_id` to inspect delivery history for a specific job
+
+---
+
+## Epic 5 — Parking Lot
+
+*Deferred features, architectural improvements, and future scope.*
+
+---
+
+### Ticket 5.1 — Developer Registration & API Key Issuance (Deferred Ticket 1.3)
+**Priority:** Low / Week 2+
+Implement full self-service registration and multiple key management endpoints (`POST /auth/register`, `POST /auth/keys`, `DELETE /auth/keys/:id`). Currently bypassed for demo mode in favor of a pre-configured `.env` API key.
+
+### Ticket 5.2 — Rate Limiting Per API Key (Deferred Ticket 1.5)
+**Priority:** Low / Week 2+
+Protect the API endpoints from abuse using a sliding window rate limiter in Redis (100 requests per minute per key) returning `429 Too Many Requests`.
+
+### Ticket 5.3 — Webhook Worker Graceful Shutdown & Work Queue Integration
+**Priority:** Medium / Recommended Improvement
+Currently, webhooks are fired as raw in-flight background goroutines. If the worker crashes or restarts, these in-flight webhooks can be lost without update. Firing webhooks should utilize a dedicated Asynq queue or register wait groups to block shutdown until all in-flight requests finish cleanly.
