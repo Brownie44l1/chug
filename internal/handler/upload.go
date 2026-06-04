@@ -218,3 +218,86 @@ func (h *UploadHandler) markJobAsFailed(jobID string, reason string, ttlHours in
 		log.Printf("upload handler helper: failed to mark job %s as failed: %v", jobID, err)
 	}
 }
+
+// Retry handles manually retrying a failed job within its TTL window.
+func (h *UploadHandler) Retry(c *gin.Context) {
+	// 1. Retrieve developer context
+	developerIDRaw, exists := c.Get("developer_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: missing developer context"})
+		return
+	}
+	developerID := developerIDRaw.(string)
+
+	jobID := c.Param("job_id")
+	if jobID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing job ID"})
+		return
+	}
+
+	// 2. Fetch job from DB
+	var job struct {
+		DeveloperID string
+		Status      string
+		ExpiresAt   sql.NullTime
+		MaxRetries  int
+	}
+
+	err := h.db.QueryRow(`
+		SELECT developer_id, status, expires_at, max_retries
+		FROM upload_jobs
+		WHERE id = $1
+	`, jobID).Scan(&job.DeveloperID, &job.Status, &job.ExpiresAt, &job.MaxRetries)
+
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "invalid input syntax for type uuid") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+			return
+		}
+		log.Printf("retry job handler: failed to fetch job: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	// 3. Verify developer ownership
+	if job.DeveloperID != developerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: you do not own this job"})
+		return
+	}
+
+	// 4. Returns 404 Not Found if expires_at has passed
+	if job.ExpiresAt.Valid && job.ExpiresAt.Time.Before(time.Now()) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found or has expired"})
+		return
+	}
+
+	// 5. Returns 400 Bad Request if status is not failed
+	if job.Status != "failed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Job is not in a failed state"})
+		return
+	}
+
+	// 6. Reset job record properties in PostgreSQL
+	_, err = h.db.Exec(`
+		UPDATE upload_jobs
+		SET status = 'pending', retry_count = 0, failure_reason = NULL, expires_at = NULL, updated_at = now()
+		WHERE id = $1
+	`, jobID)
+	if err != nil {
+		log.Printf("retry job handler: failed to reset job properties: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reset job properties"})
+		return
+	}
+
+	// 7. Re-enqueue the job to the background worker
+	if err := queue.EnqueueJob(jobID, job.MaxRetries); err != nil {
+		log.Printf("retry job handler: failed to re-enqueue job %s: %v", jobID, err)
+		// Mark it back as failed since enqueueing failed
+		h.markJobAsFailed(jobID, "Failed to re-enqueue job: "+err.Error(), 24)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Failed to queue upload job"})
+		return
+	}
+
+	// 8. Return 202 Accepted
+	c.JSON(http.StatusAccepted, gin.H{"job_id": jobID})
+}

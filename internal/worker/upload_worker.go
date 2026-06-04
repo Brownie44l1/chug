@@ -120,11 +120,6 @@ func HandleUploadJob(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return fmt.Errorf("failed to read temp file: %w", err)
 	}
-	defer func() {
-		// Clean up temp file on completion
-		_ = os.Remove(tempFilePath)
-	}()
-
 	// 5. Upload file bytes to R2
 	r2Client := uploader
 	if r2Client == nil {
@@ -150,6 +145,9 @@ func HandleUploadJob(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return fmt.Errorf("failed to update job status on success: %w", err)
 	}
+
+	// Clean up the temp file on success
+	_ = os.Remove(tempFilePath)
 
 	duration := time.Since(start)
 	log.Printf("Processed task: job_id=%s status=success duration_ms=%d error=nil", jobID, duration.Milliseconds())
@@ -259,6 +257,11 @@ func CleanExpiredFailedJobs(ctx context.Context, dbConn *sql.DB) error {
 
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("failed to commit chunk: %w", err)
+		}
+
+		// Delete local temp files for these expired jobs
+		for _, id := range ids {
+			_ = os.Remove(filepath.Join("tmp/uploads", id))
 		}
 
 		log.Printf("worker cron: deleted chunk of %d expired failed jobs", len(ids))

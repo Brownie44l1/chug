@@ -90,6 +90,7 @@ func main() {
 
 		protected.POST("/uploads", uploadHandler.Create)
 		protected.GET("/uploads/:job_id", uploadHandler.Get)
+		protected.POST("/uploads/:job_id/retry", uploadHandler.Retry)
 	}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -92,6 +93,7 @@ func TestUploadHandler(t *testing.T) {
 
 	r.POST("/uploads", middleware.Auth(hashSecret), uploadHandler.Create)
 	r.GET("/uploads/:job_id", middleware.Auth(hashSecret), uploadHandler.Get)
+	r.POST("/uploads/:job_id/retry", middleware.Auth(hashSecret), uploadHandler.Retry)
 
 	// Mock file data
 	pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02}
@@ -390,5 +392,145 @@ func TestUploadHandler(t *testing.T) {
 		r.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("Retry Job - Job Not Found", func(t *testing.T) {
+		req, err := http.NewRequest("POST", "/uploads/00000000-0000-0000-0000-000000000000/retry", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Retry Job - Forbidden (Other Developer)", func(t *testing.T) {
+		// 1. Seed another developer
+		var otherDevID string
+		err = pgDB.QueryRow(`
+			INSERT INTO developers (email, hashed_password)
+			VALUES ($1, $2)
+			ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+			RETURNING id
+		`, "test-other-retry-dev@example.com", "testpass").Scan(&otherDevID)
+		require.NoError(t, err)
+
+		// 2. Insert job for that developer
+		var otherJobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum)
+			VALUES ($1, $2, 'failed', 'other.png', 100, 'image/png', 'xyz')
+			RETURNING id
+		`, otherDevID, validKeyID).Scan(&otherJobID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM upload_jobs WHERE id = $1", otherJobID)
+		}()
+
+		req, err := http.NewRequest("POST", "/uploads/"+otherJobID+"/retry", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("Retry Job - Job Expired", func(t *testing.T) {
+		var expiredJobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, expires_at)
+			VALUES ($1, $2, 'failed', 'expired.png', 10, 'image/png', 'checksumexp', now() - interval '1 hour')
+			RETURNING id
+		`, devID, validKeyID).Scan(&expiredJobID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM upload_jobs WHERE id = $1", expiredJobID)
+		}()
+
+		req, err := http.NewRequest("POST", "/uploads/"+expiredJobID+"/retry", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Retry Job - Bad Request (Not Failed State)", func(t *testing.T) {
+		var pendingJobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum)
+			VALUES ($1, $2, 'pending', 'pending.png', 10, 'image/png', 'checksumpen')
+			RETURNING id
+		`, devID, validKeyID).Scan(&pendingJobID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM upload_jobs WHERE id = $1", pendingJobID)
+		}()
+
+		req, err := http.NewRequest("POST", "/uploads/"+pendingJobID+"/retry", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Retry Job - Successful Reset and Enqueue", func(t *testing.T) {
+		var failedJobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, expires_at, failure_reason, retry_count)
+			VALUES ($1, $2, 'failed', 'failed.png', 10, 'image/png', 'checksumfailtest', now() + interval '24 hours', 'connection error', 3)
+			RETURNING id
+		`, devID, validKeyID).Scan(&failedJobID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM upload_jobs WHERE id = $1", failedJobID)
+		}()
+
+		// Mock queue enqueue function
+		originalEnqueue := queue.EnqueueJob
+		enqueuedJobID := ""
+		enqueuedMaxRetries := -1
+		queue.EnqueueJob = func(jobID string, maxRetries int) error {
+			enqueuedJobID = jobID
+			enqueuedMaxRetries = maxRetries
+			return nil
+		}
+		defer func() { queue.EnqueueJob = originalEnqueue }()
+
+		req, err := http.NewRequest("POST", "/uploads/"+failedJobID+"/retry", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusAccepted, w.Code)
+		assert.Equal(t, failedJobID, enqueuedJobID)
+		assert.Equal(t, 3, enqueuedMaxRetries)
+
+		// Verify database reset
+		var status string
+		var retryCount int
+		var failureReason sql.NullString
+		var expiresAt sql.NullTime
+		err = pgDB.QueryRow(`
+			SELECT status, retry_count, failure_reason, expires_at
+			FROM upload_jobs
+			WHERE id = $1
+		`, failedJobID).Scan(&status, &retryCount, &failureReason, &expiresAt)
+		require.NoError(t, err)
+
+		assert.Equal(t, "pending", status)
+		assert.Equal(t, 0, retryCount)
+		assert.False(t, failureReason.Valid)
+		assert.False(t, expiresAt.Valid)
 	})
 }
