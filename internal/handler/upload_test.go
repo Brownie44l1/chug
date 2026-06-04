@@ -144,7 +144,7 @@ func TestUploadHandler(t *testing.T) {
 
 	t.Run("Valid File Upload", func(t *testing.T) {
 		originalEnqueue := queue.EnqueueJob
-		queue.EnqueueJob = func(jobID string) error {
+		queue.EnqueueJob = func(jobID string, maxRetries int) error {
 			return nil
 		}
 		defer func() { queue.EnqueueJob = originalEnqueue }()
@@ -231,7 +231,7 @@ func TestUploadHandler(t *testing.T) {
 
 	t.Run("Enqueue Fails -> Marked Failed in DB and clean up file", func(t *testing.T) {
 		originalEnqueue := queue.EnqueueJob
-		queue.EnqueueJob = func(jobID string) error {
+		queue.EnqueueJob = func(jobID string, maxRetries int) error {
 			return fmt.Errorf("redis connection error")
 		}
 		defer func() { queue.EnqueueJob = originalEnqueue }()

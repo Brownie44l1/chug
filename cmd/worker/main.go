@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/robfig/cron/v3"
 
 	"github.com/Brownie44l1/chug/internal/config"
 	"github.com/Brownie44l1/chug/internal/db"
@@ -33,7 +36,7 @@ func main() {
 		log.Fatalf("worker: failed to parse Redis URL: %v", err)
 	}
 
-	// Create Asynq server
+	// Create Asynq server with custom ErrorHandler and RetryDelayFunc
 	srv := asynq.NewServer(
 		redisOpt,
 		asynq.Config{
@@ -41,6 +44,8 @@ func main() {
 			Queues: map[string]int{
 				cfg.QueueName: 1,
 			},
+			ErrorHandler:   asynq.ErrorHandlerFunc(worker.CustomErrorHandler),
+			RetryDelayFunc: worker.CustomRetryDelay,
 		},
 	)
 
@@ -55,6 +60,22 @@ func main() {
 			log.Fatalf("worker: server run failed: %v", err)
 		}
 	}()
+
+	// Initialize and start cron scheduler for TTL cleanup of expired failed jobs (runs hourly)
+	c := cron.New()
+	_, err = c.AddFunc("@hourly", func() {
+		log.Println("cron: running cleanup of expired failed jobs")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := worker.CleanExpiredFailedJobs(ctx, database); err != nil {
+			log.Printf("cron error: failed to clean expired jobs: %v", err)
+		}
+	})
+	if err != nil {
+		log.Fatalf("worker: failed to schedule cron job: %v", err)
+	}
+	c.Start()
+	defer c.Stop()
 
 	// Handle Graceful Shutdown signals
 	stopChan := make(chan os.Signal, 1)

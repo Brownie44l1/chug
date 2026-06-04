@@ -23,7 +23,7 @@ func TestEnqueueJob(t *testing.T) {
 
 	// Enqueue a job
 	jobID := "test-job-uuid-1234"
-	err = EnqueueJob(jobID)
+	err = EnqueueJob(jobID, 3)
 	require.NoError(t, err)
 
 	// Verify job was enqueued in Redis by reading using Asynq Inspector.

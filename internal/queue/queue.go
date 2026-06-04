@@ -18,7 +18,7 @@ var client *asynq.Client
 var queueName string
 
 // EnqueueJob is a mockable function pointer for enqueuing a job ID to the Asynq background workers.
-var EnqueueJob = func(jobID string) error {
+var EnqueueJob = func(jobID string, maxRetries int) error {
 	if client == nil {
 		return fmt.Errorf("queue client not initialized")
 	}
@@ -33,7 +33,7 @@ var EnqueueJob = func(jobID string) error {
 
 	errChan := make(chan error, 1)
 	go func() {
-		_, err := client.Enqueue(task, asynq.Queue(queueName))
+		_, err := client.Enqueue(task, asynq.Queue(queueName), asynq.MaxRetry(maxRetries))
 		errChan <- err
 	}()
 

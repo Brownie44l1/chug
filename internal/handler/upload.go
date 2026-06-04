@@ -116,7 +116,7 @@ func (h *UploadHandler) Create(c *gin.Context) {
 	}
 
 	// 7. Enqueue the job to the Redis queue
-	if err := queue.EnqueueJob(jobID); err != nil {
+	if err := queue.EnqueueJob(jobID, maxRetries); err != nil {
 		log.Printf("upload handler: failed to enqueue job %s: %v", jobID, err)
 		
 		// Clean up the temp file

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/stretchr/testify/assert"
@@ -251,5 +252,192 @@ func TestHandleUploadJob(t *testing.T) {
 		task := asynq.NewTask("upload:job", []byte("invalid-json"))
 		err := HandleUploadJob(context.Background(), task)
 		assert.Error(t, err)
+	})
+}
+
+func TestCustomRetryDelay(t *testing.T) {
+	task := asynq.NewTask("upload:job", nil)
+
+	assert.Equal(t, 30*time.Second, CustomRetryDelay(1, nil, task))
+	assert.Equal(t, 5*time.Minute, CustomRetryDelay(2, nil, task))
+	assert.Equal(t, 30*time.Minute, CustomRetryDelay(3, nil, task))
+	assert.Equal(t, 30*time.Minute, CustomRetryDelay(10, nil, task))
+}
+
+func TestCleanExpiredFailedJobs(t *testing.T) {
+	cfg := config.Load()
+	if cfg.PostgresURL == "" {
+		t.Skip("Skipping cron tests: database not configured")
+	}
+
+	pgDB, err := db.Connect(cfg.PostgresURL)
+	require.NoError(t, err)
+	defer pgDB.Close()
+
+	// Seed developer
+	var devID string
+	err = pgDB.QueryRow(`
+		INSERT INTO developers (email, hashed_password)
+		VALUES ($1, $2)
+		ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+		RETURNING id
+	`, "test-cron-dev@example.com", "testpass").Scan(&devID)
+	require.NoError(t, err)
+
+	// Seed settings
+	_, err = pgDB.Exec(`
+		INSERT INTO developer_settings (developer_id, max_file_size_bytes, max_retries, ttl_hours)
+		VALUES ($1, 1000, 3, 24)
+		ON CONFLICT (developer_id) DO NOTHING
+	`, devID)
+	require.NoError(t, err)
+
+	var keyID string
+	err = pgDB.QueryRow(`
+		INSERT INTO api_keys (developer_id, key_hash, label, is_active)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT DO NOTHING
+		RETURNING id
+	`, devID, "dummyhashcron", "test-cron-key", true).Scan(&keyID)
+	if err != nil {
+		err = pgDB.QueryRow("SELECT id FROM api_keys WHERE developer_id = $1 LIMIT 1", devID).Scan(&keyID)
+		require.NoError(t, err)
+	}
+
+	// Insert failed and expired job
+	var expiredJobID string
+	err = pgDB.QueryRow(`
+		INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, expires_at)
+		VALUES ($1, $2, 'failed', 'expired.png', 10, 'image/png', 'expiredsum', now() - interval '1 hour')
+		RETURNING id
+	`, devID, keyID).Scan(&expiredJobID)
+	require.NoError(t, err)
+
+	// Insert failed but NOT expired job
+	var validJobID string
+	err = pgDB.QueryRow(`
+		INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, expires_at)
+		VALUES ($1, $2, 'failed', 'valid.png', 10, 'image/png', 'validsum', now() + interval '5 hours')
+		RETURNING id
+	`, devID, keyID).Scan(&validJobID)
+	require.NoError(t, err)
+
+	// Run clean routine
+	err = CleanExpiredFailedJobs(context.Background(), pgDB)
+	require.NoError(t, err)
+
+	// Verify expired was deleted
+	var expiredExists bool
+	err = pgDB.QueryRow("SELECT EXISTS(SELECT 1 FROM upload_jobs WHERE id = $1)", expiredJobID).Scan(&expiredExists)
+	require.NoError(t, err)
+	assert.False(t, expiredExists, "Expired failed job should have been deleted")
+
+	// Verify valid still exists
+	var validExists bool
+	err = pgDB.QueryRow("SELECT EXISTS(SELECT 1 FROM upload_jobs WHERE id = $1)", validJobID).Scan(&validExists)
+	require.NoError(t, err)
+	assert.True(t, validExists, "Non-expired failed job should not have been deleted")
+}
+
+func TestCustomErrorHandler(t *testing.T) {
+	cfg := config.Load()
+	if cfg.PostgresURL == "" {
+		t.Skip("Skipping error handler tests: database not configured")
+	}
+
+	pgDB, err := db.Connect(cfg.PostgresURL)
+	require.NoError(t, err)
+	defer pgDB.Close()
+
+	// Seed developer
+	var devID string
+	err = pgDB.QueryRow(`
+		INSERT INTO developers (email, hashed_password)
+		VALUES ($1, $2)
+		ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+		RETURNING id
+	`, "test-err-dev@example.com", "testpass").Scan(&devID)
+	require.NoError(t, err)
+
+	// Seed settings
+	_, err = pgDB.Exec(`
+		INSERT INTO developer_settings (developer_id, max_file_size_bytes, max_retries, ttl_hours)
+		VALUES ($1, 1000, 3, 24)
+		ON CONFLICT (developer_id) DO NOTHING
+	`, devID)
+	require.NoError(t, err)
+
+	var keyID string
+	err = pgDB.QueryRow(`
+		INSERT INTO api_keys (developer_id, key_hash, label, is_active)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT DO NOTHING
+		RETURNING id
+	`, devID, "dummyhasherr", "test-err-key", true).Scan(&keyID)
+	if err != nil {
+		err = pgDB.QueryRow("SELECT id FROM api_keys WHERE developer_id = $1 LIMIT 1", devID).Scan(&keyID)
+		require.NoError(t, err)
+	}
+
+	t.Run("Non-final retry attempt does not fail job", func(t *testing.T) {
+		var jobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, max_retries)
+			VALUES ($1, $2, 'pending', 'err1.png', 10, 'image/png', 'checksumerr1', 3)
+			RETURNING id
+		`, devID, keyID).Scan(&jobID)
+		require.NoError(t, err)
+
+		// Mock getRetryInfo to return (0, 3) -> 1st attempt out of 3 max
+		originalGetRetryInfo := getRetryInfo
+		getRetryInfo = func(ctx context.Context) (int, int) {
+			return 0, 3
+		}
+		defer func() { getRetryInfo = originalGetRetryInfo }()
+
+		payload, err := json.Marshal(map[string]string{"job_id": jobID})
+		require.NoError(t, err)
+
+		task := asynq.NewTask("upload:job", payload)
+		CustomErrorHandler(context.Background(), task, errors.New("temporary s3 error"))
+
+		// Status should still be pending
+		var status string
+		err = pgDB.QueryRow("SELECT status FROM upload_jobs WHERE id = $1", jobID).Scan(&status)
+		require.NoError(t, err)
+		assert.Equal(t, "pending", status)
+	})
+
+	t.Run("Final retry attempt marks job as failed and stores reason", func(t *testing.T) {
+		var jobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, max_retries)
+			VALUES ($1, $2, 'pending', 'err2.png', 10, 'image/png', 'checksumerr2', 3)
+			RETURNING id
+		`, devID, keyID).Scan(&jobID)
+		require.NoError(t, err)
+
+		// Mock getRetryInfo to return (2, 3) -> 3rd attempt out of 3 max (retries exhausted)
+		originalGetRetryInfo := getRetryInfo
+		getRetryInfo = func(ctx context.Context) (int, int) {
+			return 2, 3
+		}
+		defer func() { getRetryInfo = originalGetRetryInfo }()
+
+		payload, err := json.Marshal(map[string]string{"job_id": jobID})
+		require.NoError(t, err)
+
+		task := asynq.NewTask("upload:job", payload)
+		CustomErrorHandler(context.Background(), task, errors.New("permanent R2 connection timeout"))
+
+		// Status should be failed with failure reason and expires_at populated
+		var status string
+		var failureReason string
+		var expiresAt time.Time
+		err = pgDB.QueryRow("SELECT status, failure_reason, expires_at FROM upload_jobs WHERE id = $1", jobID).Scan(&status, &failureReason, &expiresAt)
+		require.NoError(t, err)
+		assert.Equal(t, "failed", status)
+		assert.Equal(t, "permanent R2 connection timeout", failureReason)
+		assert.True(t, expiresAt.After(time.Now()))
 	})
 }
