@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -130,6 +131,79 @@ func (h *UploadHandler) Create(c *gin.Context) {
 
 	// 8. Respond with 202 Accepted and job ID
 	c.JSON(http.StatusAccepted, gin.H{"job_id": jobID})
+}
+
+// Get handles retrieving the status and details of an upload job.
+func (h *UploadHandler) Get(c *gin.Context) {
+	// 1. Retrieve developer context
+	developerIDRaw, exists := c.Get("developer_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: missing developer context"})
+		return
+	}
+	developerID := developerIDRaw.(string)
+
+	jobID := c.Param("job_id")
+	if jobID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing job ID"})
+		return
+	}
+
+	// 2. Fetch job from DB
+	var job struct {
+		ID            string
+		DeveloperID   string
+		Status        string
+		StorageURL    sql.NullString
+		FailureReason sql.NullString
+		ExpiresAt     sql.NullTime
+	}
+
+	err := h.db.QueryRow(`
+		SELECT id, developer_id, status, storage_url, failure_reason, expires_at
+		FROM upload_jobs
+		WHERE id = $1
+	`, jobID).Scan(&job.ID, &job.DeveloperID, &job.Status, &job.StorageURL, &job.FailureReason, &job.ExpiresAt)
+
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "invalid input syntax for type uuid") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+			return
+		}
+		log.Printf("get job handler: failed to fetch job: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	// 3. Verify developer ownership
+	if job.DeveloperID != developerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: you do not own this job"})
+		return
+	}
+
+	// 4. Build consistent response shape (null if missing)
+	var storageURL *string
+	if job.StorageURL.Valid {
+		storageURL = &job.StorageURL.String
+	}
+
+	var failureReason *string
+	if job.FailureReason.Valid {
+		failureReason = &job.FailureReason.String
+	}
+
+	var expiresAt *time.Time
+	if job.ExpiresAt.Valid {
+		expiresAt = &job.ExpiresAt.Time
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"job_id":         job.ID,
+		"status":         job.Status,
+		"storage_url":    storageURL,
+		"failure_reason": failureReason,
+		"expires_at":     expiresAt,
+	})
 }
 
 // markJobAsFailed updates a job status to failed and sets its expiration TTL.

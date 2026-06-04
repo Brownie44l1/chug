@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -90,6 +91,7 @@ func TestUploadHandler(t *testing.T) {
 	uploadHandler := NewUploadHandler(pgDB)
 
 	r.POST("/uploads", middleware.Auth(hashSecret), uploadHandler.Create)
+	r.GET("/uploads/:job_id", middleware.Auth(hashSecret), uploadHandler.Get)
 
 	// Mock file data
 	pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02}
@@ -262,5 +264,131 @@ func TestUploadHandler(t *testing.T) {
 		tempFilePath := filepath.Join("tmp/uploads", jobID)
 		_, err = os.Stat(tempFilePath)
 		assert.True(t, os.IsNotExist(err))
+	})
+
+	t.Run("Get Job Status - Success", func(t *testing.T) {
+		// 1. Insert a mock success job record
+		var successJobID string
+		storageURL := "https://r2.chug.dev/test.png"
+		err := pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, storage_url)
+			VALUES ($1, $2, 'success', 'test.png', 100, 'image/png', 'abc', $3)
+			RETURNING id
+		`, devID, validKeyID, storageURL).Scan(&successJobID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM upload_jobs WHERE id = $1", successJobID)
+		}()
+
+		req, err := http.NewRequest("GET", "/uploads/"+successJobID, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		var res map[string]interface{}
+		err = json.Unmarshal(w.Body.Bytes(), &res)
+		require.NoError(t, err)
+
+		assert.Equal(t, successJobID, res["job_id"])
+		assert.Equal(t, "success", res["status"])
+		assert.Equal(t, storageURL, res["storage_url"])
+		assert.Nil(t, res["failure_reason"])
+		assert.Nil(t, res["expires_at"])
+	})
+
+	t.Run("Get Job Status - Failed", func(t *testing.T) {
+		// 1. Insert a mock failed job record
+		var failedJobID string
+		failureReason := "R2 upload timed out"
+		expiresAt := time.Now().Add(24 * time.Hour).UTC()
+		err := pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum, failure_reason, expires_at)
+			VALUES ($1, $2, 'failed', 'test.png', 100, 'image/png', 'abc', $3, $4)
+			RETURNING id
+		`, devID, validKeyID, failureReason, expiresAt).Scan(&failedJobID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM upload_jobs WHERE id = $1", failedJobID)
+		}()
+
+		req, err := http.NewRequest("GET", "/uploads/"+failedJobID, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		var res map[string]interface{}
+		err = json.Unmarshal(w.Body.Bytes(), &res)
+		require.NoError(t, err)
+
+		assert.Equal(t, failedJobID, res["job_id"])
+		assert.Equal(t, "failed", res["status"])
+		assert.Nil(t, res["storage_url"])
+		assert.Equal(t, failureReason, res["failure_reason"])
+		assert.NotEmpty(t, res["expires_at"])
+	})
+
+	t.Run("Get Job Status - Not Found (unrecognised UUID)", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "/uploads/11111111-2222-3333-4444-555555555555", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Get Job Status - Not Found (invalid UUID format)", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "/uploads/invalid-uuid-format", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Get Job Status - Forbidden (belongs to different developer)", func(t *testing.T) {
+		// 1. Seed another developer
+		var otherDevID string
+		err := pgDB.QueryRow(`
+			INSERT INTO developers (email, hashed_password)
+			VALUES ($1, $2)
+			ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+			RETURNING id
+		`, "other-test-dev@example.com", "otherpass").Scan(&otherDevID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM developers WHERE id = $1", otherDevID)
+		}()
+
+		// 2. Insert job owned by other developer
+		var otherJobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum)
+			VALUES ($1, $2, 'pending', 'other.png', 100, 'image/png', 'abc')
+			RETURNING id
+		`, otherDevID, validKeyID).Scan(&otherJobID)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = pgDB.Exec("DELETE FROM upload_jobs WHERE id = $1", otherJobID)
+		}()
+
+		// 3. Try to query using validKey (which is owned by devID, NOT otherDevID)
+		req, err := http.NewRequest("GET", "/uploads/"+otherJobID, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
 	})
 }

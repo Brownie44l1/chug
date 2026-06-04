@@ -89,6 +89,7 @@ func main() {
 		})
 
 		protected.POST("/uploads", uploadHandler.Create)
+		protected.GET("/uploads/:job_id", uploadHandler.Get)
 	}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
