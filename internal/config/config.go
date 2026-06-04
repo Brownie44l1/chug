@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -15,6 +16,7 @@ type Config struct {
 	APIKeyHashSecret  string
 	DefaultAPIKey     string
 	QueueName         string
+	WorkerConcurrency int
 }
 
 func Load() *Config {
@@ -22,14 +24,21 @@ func Load() *Config {
 		log.Println("no .env file found, reading from environment")
 	}
 
+	concurrencyStr := getEnv("WORKER_CONCURRENCY", "10")
+	var concurrency int = 10
+	if parsed, err := strconv.Atoi(concurrencyStr); err == nil {
+		concurrency = parsed
+	}
+
 	return &Config{
-		Port:             getEnv("PORT", "8080"),
-		Env:              getEnv("ENV", "development"),
-		PostgresURL:      getEnv("POSTGRES_URL", ""),
-		RedisURL:         getEnv("REDIS_URL", ""),
-		APIKeyHashSecret: getEnv("API_KEY_HASH_SECRET", ""),
-		DefaultAPIKey:    getEnv("API_KEY", ""),
-		QueueName:        getEnv("QUEUE_NAME", "uploads:default"),
+		Port:              getEnv("PORT", "8080"),
+		Env:               getEnv("ENV", "development"),
+		PostgresURL:       getEnv("POSTGRES_URL", ""),
+		RedisURL:          getEnv("REDIS_URL", ""),
+		APIKeyHashSecret:  getEnv("API_KEY_HASH_SECRET", ""),
+		DefaultAPIKey:     getEnv("API_KEY", ""),
+		QueueName:         getEnv("QUEUE_NAME", "uploads:default"),
+		WorkerConcurrency: concurrency,
 	}
 }
 
