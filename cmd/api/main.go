@@ -72,6 +72,7 @@ func main() {
 	})
 
 	uploadHandler := handler.NewUploadHandler(database)
+	webhookHandler := handler.NewWebhookHandler(database)
 
 	// Protected routes
 	protected := r.Group("/")
@@ -91,6 +92,11 @@ func main() {
 		protected.POST("/uploads", uploadHandler.Create)
 		protected.GET("/uploads/:job_id", uploadHandler.Get)
 		protected.POST("/uploads/:job_id/retry", uploadHandler.Retry)
+
+		// Webhook routes
+		protected.POST("/webhooks", webhookHandler.Register)
+		protected.GET("/webhooks", webhookHandler.List)
+		protected.DELETE("/webhooks/:id", webhookHandler.Delete)
 	}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
