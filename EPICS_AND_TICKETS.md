@@ -326,9 +326,9 @@ Handle unresponsive or temporarily unavailable developer webhook servers.
 
 ---
 
-## Epic 5 — Parking Lot
+## Epic 5 — Production Hardening & Registration
 
-*Deferred features, architectural improvements, and future scope.*
+*Key management, rate limiting, and worker reliability features for production.*
 
 ---
 

@@ -61,6 +61,17 @@ func TestWebhookHandler(t *testing.T) {
 	var validKeyID string
 
 	// Clean database state
+	_, _ = pgDB.Exec(`
+		DELETE FROM webhook_deliveries 
+		WHERE upload_job_id IN (
+			SELECT id FROM upload_jobs 
+			WHERE api_key_id IN (SELECT id FROM api_keys WHERE key_hash = $1 OR developer_id = $2)
+		)
+	`, hashedValidKey, devID)
+	_, _ = pgDB.Exec(`
+		DELETE FROM upload_jobs 
+		WHERE api_key_id IN (SELECT id FROM api_keys WHERE key_hash = $1 OR developer_id = $2) OR developer_id = $2
+	`, hashedValidKey, devID)
 	_, _ = pgDB.Exec("DELETE FROM webhook_endpoints WHERE developer_id = $1", devID)
 	_, _ = pgDB.Exec("DELETE FROM api_keys WHERE key_hash = $1 OR developer_id = $2", hashedValidKey, devID)
 	_ = rdb.Del(context.Background(), "auth:key:"+hashedValidKey)
