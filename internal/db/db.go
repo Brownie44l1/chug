@@ -85,6 +85,16 @@ func SeedDefaultDeveloperAndKey(defaultAPIKey, hashSecret string) error {
 		return fmt.Errorf("failed to insert default developer: %w", err)
 	}
 
+	// Insert default developer settings if they do not exist
+	_, err = tx.Exec(`
+		INSERT INTO developer_settings (developer_id, max_file_size_bytes, max_retries, ttl_hours, monthly_upload_limit)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (developer_id) DO NOTHING
+	`, developerID, 10485760, 3, 24, 100)
+	if err != nil {
+		return fmt.Errorf("failed to insert default developer settings: %w", err)
+	}
+
 	// Insert API key
 	var apiKeyID string
 	err = tx.QueryRow(`

@@ -62,8 +62,14 @@ func TestAuthMiddleware(t *testing.T) {
 	hashedValidKey := hashKey(validKey)
 	var validKeyID string
 
+	revokedKey := "chug_revoked_key_456"
+	hashedRevokedKey := hashKey(revokedKey)
+	var revokedKeyID string
+
 	// Clean existing if any to avoid test pollution
-	_, _ = pgDB.Exec("DELETE FROM api_keys WHERE developer_id = $1", devID)
+	_, _ = pgDB.Exec("DELETE FROM api_keys WHERE key_hash IN ($1, $2) OR developer_id = $3", hashedValidKey, hashedRevokedKey, devID)
+	_ = rdb.Del(ctx(), "auth:key:"+hashedValidKey)
+	_ = rdb.Del(ctx(), "auth:key:"+hashedRevokedKey)
 
 	err = pgDB.QueryRow(`
 		INSERT INTO api_keys (developer_id, key_hash, label, is_active)
@@ -72,9 +78,6 @@ func TestAuthMiddleware(t *testing.T) {
 	`, devID, hashedValidKey, "test-valid", true).Scan(&validKeyID)
 	require.NoError(t, err)
 
-	revokedKey := "chug_revoked_key_456"
-	hashedRevokedKey := hashKey(revokedKey)
-	var revokedKeyID string
 	err = pgDB.QueryRow(`
 		INSERT INTO api_keys (developer_id, key_hash, label, is_active, revoked_at)
 		VALUES ($1, $2, $3, $4, $5)

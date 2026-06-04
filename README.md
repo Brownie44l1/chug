@@ -194,3 +194,10 @@ Also have a look at the [FAQ](FAQ.md).
 ---
 
 Looking for alternatives? [https://awesome-go.com/#database](https://awesome-go.com/#database).
+
+## Difficulties Faced & Key Learnings
+
+### Integration Testing with Shared State (Postgres & Redis)
+During development of Ticket 2.2, we encountered test failures in `TestUploadHandler` due to unique constraint violations (`api_keys_key_hash_key`) and foreign key constraint violations:
+- **Root Cause:** When running the entire test suite (`go test ./...`), Go runs test packages concurrently. The tests in `internal/middleware` and `internal/handler` both connect to the same PostgreSQL and Redis instances. Stale cache entries in Redis from previous runs or concurrent packages caused the authentication middleware to succeed using old developer IDs, which then failed PostgreSQL foreign key checks.
+- **Solution:** Always ensure that integration tests isolate and clean up their state. We updated the test setup blocks to explicitly clean up test key hashes from both Postgres and Redis before inserting new test fixtures.

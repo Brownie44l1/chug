@@ -9,6 +9,7 @@ import (
 
 	"github.com/Brownie44l1/chug/internal/config"
 	"github.com/Brownie44l1/chug/internal/db"
+	"github.com/Brownie44l1/chug/internal/handler"
 	"github.com/Brownie44l1/chug/internal/middleware"
 	"github.com/Brownie44l1/chug/internal/redis"
 )
@@ -59,6 +60,8 @@ func main() {
 		})
 	})
 
+	uploadHandler := handler.NewUploadHandler(database)
+
 	// Protected routes
 	protected := r.Group("/")
 	protected.Use(middleware.Auth(cfg.APIKeyHashSecret))
@@ -73,6 +76,8 @@ func main() {
 				"api_key_id":    apiKeyID,
 			})
 		})
+
+		protected.POST("/uploads", uploadHandler.Create)
 	}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
