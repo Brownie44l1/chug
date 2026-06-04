@@ -112,3 +112,13 @@ Run the entire test suite:
 ```bash
 make test
 ```
+
+### 5. Running Load Tests & Benchmarks
+We provide a built-in CLI load-testing tool to measure API latency, background processing speed, and idempotency efficiency under load:
+```bash
+make run-benchmark
+```
+*You can customize parameters directly via command line:*
+```bash
+go run cmd/benchmark/main.go -server "http://localhost:8080" -total 100 -concurrency 10 -dups 30
+```

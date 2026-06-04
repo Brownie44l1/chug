@@ -24,3 +24,6 @@ test:
 
 tidy:
 	GOTOOLCHAIN=go1.22.2 go mod tidy
+
+run-benchmark:
+	GOTOOLCHAIN=go1.22.2 go run cmd/benchmark/main.go -server "http://localhost:8080" -total 50 -concurrency 5 -dups 30
