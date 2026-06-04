@@ -17,6 +17,11 @@ type Config struct {
 	DefaultAPIKey     string
 	QueueName         string
 	WorkerConcurrency int
+	R2AccountID       string
+	R2AccessKeyID     string
+	R2AccessKeySecret string
+	R2BucketName      string
+	R2PublicURL       string
 }
 
 func Load() *Config {
@@ -39,6 +44,11 @@ func Load() *Config {
 		DefaultAPIKey:     getEnv("API_KEY", ""),
 		QueueName:         getEnv("QUEUE_NAME", "uploads:default"),
 		WorkerConcurrency: concurrency,
+		R2AccountID:       getEnv("R2_ACCOUNT_ID", ""),
+		R2AccessKeyID:     getEnv("R2_ACCESS_KEY_ID", ""),
+		R2AccessKeySecret: getEnv("R2_ACCESS_KEY_SECRET", ""),
+		R2BucketName:      getEnv("R2_BUCKET_NAME", "chug-uploads"),
+		R2PublicURL:       getEnv("R2_PUBLIC_URL", ""),
 	}
 }
 
