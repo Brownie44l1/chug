@@ -8,10 +8,12 @@ import (
 )
 
 type Config struct {
-	Port        string
-	Env         string
-	PostgresURL string
-	RedisURL    string
+	Port              string
+	Env               string
+	PostgresURL       string
+	RedisURL          string
+	APIKeyHashSecret  string
+	DefaultAPIKey     string
 }
 
 func Load() *Config {
@@ -20,10 +22,12 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:        getEnv("PORT", "8080"),
-		Env:         getEnv("ENV", "development"),
-		PostgresURL: getEnv("POSTGRES_URL", ""),
-		RedisURL:    getEnv("REDIS_URL", ""),
+		Port:             getEnv("PORT", "8080"),
+		Env:              getEnv("ENV", "development"),
+		PostgresURL:      getEnv("POSTGRES_URL", ""),
+		RedisURL:         getEnv("REDIS_URL", ""),
+		APIKeyHashSecret: getEnv("API_KEY_HASH_SECRET", ""),
+		DefaultAPIKey:    getEnv("API_KEY", ""),
 	}
 }
 
