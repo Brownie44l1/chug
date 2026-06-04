@@ -12,35 +12,28 @@ Chug consists of:
 3. **Background Worker (Go)**: Dequeues jobs, checks idempotency (via file checksums), uploads images to Cloudflare R2 storage, updates the database, and fires webhook notifications to registered developer endpoints.
 4. **PostgreSQL Database**: Serves as the source of truth for developer configurations, API keys, upload jobs, and webhook delivery records.
 
-```
-                      DEVELOPER'S WORLD
-─────────────────────────────────────────────────────────────
-  [Developer's App / Backend Server]
-         │                              ▲
-         │ HTTP Requests                │ Webhook Callbacks
-         │ POST /uploads                │ { job_id, status, url }
-         ▼                              │
-─────────────────────────────────────────────────────────────
-                        YOUR SERVICE
+```mermaid
+flowchart LR
+    Client((Developer App))
+    Webhook((Webhook Endpoint))
 
-  ┌──────────────────────────────────────────────────────┐
-  │                   API LAYER (Go/Gin)                  │
-  └─────────────────────┬────────────────────────────────┘
-                        │
-                        ▼ enqueue
-  ┌──────────────────────────────────────────────────────┐
-  │                 REDIS (Asynq Queue)                   │
-  └─────────────────────┬────────────────────────────────┘
-                        │
-                        ▼ dequeue
-  ┌──────────────────────────────────────────────────────┐
-  │              BACKGROUND WORKER (Go)                   │
-  └──────────┬──────────────────────┬────────────────────┘
-             │                      │
-             ▼                      ▼
-  ┌────────────────────┐  ┌─────────────────────────────┐
-  │    PostgreSQL      │  │        Cloudflare R2        │
-  └────────────────────┘  └─────────────────────────────┘
+    subgraph service[Chug Service]
+        API[API Server]
+        Queue[(Redis Queue)]
+        Worker[Background Worker]
+        DB[(PostgreSQL)]
+        R2[(Cloudflare R2)]
+
+        API <--> DB
+        API -->|Enqueue| Queue
+        Queue --> Worker
+        Worker <--> DB
+        Worker --> R2
+    end
+
+    Client -->|POST /uploads| API
+    Client <-->|GET /uploads/:job_id| API
+    Worker -->|POST Callback| Webhook
 ```
 
 ---
