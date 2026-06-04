@@ -79,6 +79,7 @@ func TestWebhookHandler(t *testing.T) {
 	r.POST("/webhooks", middleware.Auth(hashSecret), webhookHandler.Register)
 	r.GET("/webhooks", middleware.Auth(hashSecret), webhookHandler.List)
 	r.DELETE("/webhooks/:id", middleware.Auth(hashSecret), webhookHandler.Delete)
+	r.GET("/webhooks/deliveries/:job_id", middleware.Auth(hashSecret), webhookHandler.GetDeliveries)
 
 	t.Run("Unauthorized Request", func(t *testing.T) {
 		req, err := http.NewRequest("POST", "/webhooks", bytes.NewBufferString(`{"url":"https://example.com/callback"}`))
@@ -259,5 +260,80 @@ func TestWebhookHandler(t *testing.T) {
 		err = json.Unmarshal(wList.Body.Bytes(), &list)
 		require.NoError(t, err)
 		assert.Len(t, list, 0)
+	})
+
+	t.Run("Get Deliveries - Success", func(t *testing.T) {
+		// Insert job
+		var jobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum)
+			VALUES ($1, $2, 'success', 'test.png', 10, 'image/png', 'checksum_deliv_test')
+			RETURNING id
+		`, devID, validKeyID).Scan(&jobID)
+		require.NoError(t, err)
+
+		// Insert delivery
+		var deliveryID string
+		err = pgDB.QueryRow(`
+			INSERT INTO webhook_deliveries (upload_job_id, webhook_endpoint_id, status, attempt_count, response_status)
+			VALUES ($1, $2, 'delivered', 1, 200)
+			RETURNING id
+		`, jobID, createdWebhookID).Scan(&deliveryID)
+		require.NoError(t, err)
+
+		req, err := http.NewRequest("GET", "/webhooks/deliveries/"+jobID, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		var deliveries []map[string]interface{}
+		err = json.Unmarshal(w.Body.Bytes(), &deliveries)
+		require.NoError(t, err)
+		assert.Len(t, deliveries, 1)
+		assert.Equal(t, deliveryID, deliveries[0]["id"])
+		assert.Equal(t, "delivered", deliveries[0]["status"])
+	})
+
+	t.Run("Get Deliveries - Forbidden (Other Developer)", func(t *testing.T) {
+		// Insert job for other developer
+		var otherDevID string
+		err = pgDB.QueryRow(`
+			INSERT INTO developers (email, hashed_password)
+			VALUES ($1, $2)
+			ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+			RETURNING id
+		`, "other-deliv-dev@example.com", "testpass").Scan(&otherDevID)
+		require.NoError(t, err)
+
+		var otherJobID string
+		err = pgDB.QueryRow(`
+			INSERT INTO upload_jobs (developer_id, api_key_id, status, file_name, file_size_bytes, mime_type, checksum)
+			VALUES ($1, $2, 'success', 'other.png', 10, 'image/png', 'checksum_other_deliv')
+			RETURNING id
+		`, otherDevID, validKeyID).Scan(&otherJobID)
+		require.NoError(t, err)
+
+		req, err := http.NewRequest("GET", "/webhooks/deliveries/"+otherJobID, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("Get Deliveries - Not Found", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "/webhooks/deliveries/00000000-0000-0000-0000-000000000000", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+validKey)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
 }

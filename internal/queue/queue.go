@@ -76,3 +76,19 @@ func Close() error {
 	}
 	return nil
 }
+
+// EnqueueWebhookRetry enqueues a webhook retry task with a specified delay.
+func EnqueueWebhookRetry(deliveryID string, delay time.Duration) error {
+	if client == nil {
+		return fmt.Errorf("queue client not initialized")
+	}
+
+	payload, err := json.Marshal(map[string]string{"delivery_id": deliveryID})
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	task := asynq.NewTask("webhook:retry", payload)
+	_, err = client.Enqueue(task, asynq.Queue(queueName), asynq.ProcessIn(delay), asynq.MaxRetry(0))
+	return err
+}

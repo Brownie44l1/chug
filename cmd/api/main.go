@@ -97,6 +97,7 @@ func main() {
 		protected.POST("/webhooks", webhookHandler.Register)
 		protected.GET("/webhooks", webhookHandler.List)
 		protected.DELETE("/webhooks/:id", webhookHandler.Delete)
+		protected.GET("/webhooks/deliveries/:job_id", webhookHandler.GetDeliveries)
 	}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)

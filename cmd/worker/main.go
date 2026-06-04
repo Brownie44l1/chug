@@ -13,6 +13,7 @@ import (
 
 	"github.com/Brownie44l1/chug/internal/config"
 	"github.com/Brownie44l1/chug/internal/db"
+	"github.com/Brownie44l1/chug/internal/queue"
 	"github.com/Brownie44l1/chug/internal/worker"
 )
 
@@ -27,6 +28,16 @@ func main() {
 	defer func() {
 		if err := database.Close(); err != nil {
 			log.Printf("worker: error closing database connection: %v", err)
+		}
+	}()
+
+	// Initialize queue client for rescheduling webhook retries
+	if err := queue.Init(cfg.RedisURL, cfg.QueueName); err != nil {
+		log.Fatalf("worker: failed to initialize queue client: %v", err)
+	}
+	defer func() {
+		if err := queue.Close(); err != nil {
+			log.Printf("worker: error closing queue client: %v", err)
 		}
 	}()
 
@@ -52,6 +63,7 @@ func main() {
 	// Register Task Handlers
 	mux := asynq.NewServeMux()
 	mux.HandleFunc("upload:job", worker.HandleUploadJob)
+	mux.HandleFunc("webhook:retry", worker.HandleWebhookRetry)
 
 	// Start Asynq server in a background goroutine
 	go func() {

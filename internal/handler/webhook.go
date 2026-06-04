@@ -188,3 +188,95 @@ func (h *WebhookHandler) Delete(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Webhook endpoint deleted successfully"})
 }
+
+// GetDeliveries returns the delivery history for a specific job.
+func (h *WebhookHandler) GetDeliveries(c *gin.Context) {
+	// 1. Retrieve developer context
+	developerIDRaw, exists := c.Get("developer_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: missing developer context"})
+		return
+	}
+	developerID := developerIDRaw.(string)
+
+	jobID := c.Param("job_id")
+	if jobID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing job ID"})
+		return
+	}
+
+	// 2. Fetch job developer_id to verify existence and ownership
+	var dbDevID string
+	err := h.db.QueryRow(`
+		SELECT developer_id
+		FROM upload_jobs
+		WHERE id = $1
+	`, jobID).Scan(&dbDevID)
+	if err != nil {
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "invalid input syntax for type uuid") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	// 3. Verify ownership
+	if dbDevID != developerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: you do not own this job"})
+		return
+	}
+
+	// 4. Fetch deliveries for this job
+	rows, err := h.db.Query(`
+		SELECT id, upload_job_id, webhook_endpoint_id, status, attempt_count, last_attempted_at, delivered_at, response_status, created_at
+		FROM webhook_deliveries
+		WHERE upload_job_id = $1
+		ORDER BY created_at DESC
+	`, jobID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+	defer rows.Close()
+
+	type DeliveryResponse struct {
+		ID                string     `json:"id"`
+		UploadJobID       string     `json:"upload_job_id"`
+		WebhookEndpointID string     `json:"webhook_endpoint_id"`
+		Status            string     `json:"status"`
+		AttemptCount      int        `json:"attempt_count"`
+		LastAttemptedAt   *time.Time `json:"last_attempted_at"`
+		DeliveredAt       *time.Time `json:"delivered_at"`
+		ResponseStatus    *int       `json:"response_status"`
+		CreatedAt         time.Time  `json:"created_at"`
+	}
+
+	deliveries := []DeliveryResponse{}
+	for rows.Next() {
+		var d DeliveryResponse
+		var lastAttempted, delivered sql.NullTime
+		var respStatus sql.NullInt64
+
+		err := rows.Scan(&d.ID, &d.UploadJobID, &d.WebhookEndpointID, &d.Status, &d.AttemptCount, &lastAttempted, &delivered, &respStatus, &d.CreatedAt)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+			return
+		}
+
+		if lastAttempted.Valid {
+			d.LastAttemptedAt = &lastAttempted.Time
+		}
+		if delivered.Valid {
+			d.DeliveredAt = &delivered.Time
+		}
+		if respStatus.Valid {
+			statusVal := int(respStatus.Int64)
+			d.ResponseStatus = &statusVal
+		}
+
+		deliveries = append(deliveries, d)
+	}
+
+	c.JSON(http.StatusOK, deliveries)
+}
