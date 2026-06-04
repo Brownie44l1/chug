@@ -107,6 +107,8 @@ func HandleUploadJob(ctx context.Context, t *asynq.Task) error {
 		tempFilePath := filepath.Join("tmp/uploads", jobID)
 		_ = os.Remove(tempFilePath)
 
+		FireWebhooksForJob(jobID)
+
 		duration := time.Since(start)
 		log.Printf("Processed task (idempotent): job_id=%s status=success duration_ms=%d error=nil", jobID, duration.Milliseconds())
 		return nil
@@ -148,6 +150,8 @@ func HandleUploadJob(ctx context.Context, t *asynq.Task) error {
 
 	// Clean up the temp file on success
 	_ = os.Remove(tempFilePath)
+
+	FireWebhooksForJob(jobID)
 
 	duration := time.Since(start)
 	log.Printf("Processed task: job_id=%s status=success duration_ms=%d error=nil", jobID, duration.Milliseconds())
@@ -200,6 +204,8 @@ func CustomErrorHandler(ctx context.Context, task *asynq.Task, err error) {
 			`, failureReason, expiresAt, jobID)
 			if dbErr != nil {
 				log.Printf("worker error handler: failed to update job %s to failed: %v", jobID, dbErr)
+			} else {
+				FireWebhooksForJob(jobID)
 			}
 		}
 	}
