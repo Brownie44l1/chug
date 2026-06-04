@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -144,16 +147,42 @@ func checkHealth(serverURL string) error {
 	return nil
 }
 
-func generateDummyPNG(seed int) []byte {
-	// Minimal valid image/png magic prefix + dummy content
-	data := make([]byte, 128)
-	data[0] = 0x89
-	data[1] = 0x50
-	data[2] = 0x4E
-	data[3] = 0x47
-	// Seed to make it unique
-	binary.BigEndian.PutUint32(data[4:8], uint32(seed))
-	return data
+func generateRealImage(seed int, useJPEG bool) []byte {
+	// Create a 100x100 pixels image
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+
+	// Draw unique colors based on seed
+	bgCol := color.RGBA{
+		R: uint8((seed * 37) % 256),
+		G: uint8((seed * 73) % 256),
+		B: uint8((seed * 109) % 256),
+		A: 255,
+	}
+	for x := 0; x < 100; x++ {
+		for y := 0; y < 100; y++ {
+			img.Set(x, y, bgCol)
+		}
+	}
+
+	// Draw diagonal lines to add unique compressed data
+	lineCol := color.RGBA{
+		R: uint8((seed * 127) % 256),
+		G: uint8((seed * 53) % 256),
+		B: uint8((seed * 199) % 256),
+		A: 255,
+	}
+	for i := 0; i < 100; i += 4 {
+		img.Set(i, i, lineCol)
+		img.Set(i, 99-i, lineCol)
+	}
+
+	var buf bytes.Buffer
+	if useJPEG {
+		_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 80})
+	} else {
+		_ = png.Encode(&buf, img)
+	}
+	return buf.Bytes()
 }
 
 func generatePayloads(total int, dupRate int) ([][]byte, []string) {
@@ -169,7 +198,9 @@ func generatePayloads(total int, dupRate int) ([][]byte, []string) {
 	uniqueChecksums := make([]string, uniqueCount)
 
 	for i := 0; i < uniqueCount; i++ {
-		b := generateDummyPNG(i + 1)
+		// Alternate between PNG and JPEG
+		useJPEG := (i % 2 == 0)
+		b := generateRealImage(i+1, useJPEG)
 		uniquePayloads[i] = b
 		h := sha256.New()
 		h.Write(b)
