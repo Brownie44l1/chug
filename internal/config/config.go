@@ -14,6 +14,7 @@ type Config struct {
 	RedisURL          string
 	APIKeyHashSecret  string
 	DefaultAPIKey     string
+	QueueName         string
 }
 
 func Load() *Config {
@@ -28,6 +29,7 @@ func Load() *Config {
 		RedisURL:         getEnv("REDIS_URL", ""),
 		APIKeyHashSecret: getEnv("API_KEY_HASH_SECRET", ""),
 		DefaultAPIKey:    getEnv("API_KEY", ""),
+		QueueName:        getEnv("QUEUE_NAME", "uploads:default"),
 	}
 }
 

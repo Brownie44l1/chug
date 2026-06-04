@@ -11,6 +11,7 @@ import (
 	"github.com/Brownie44l1/chug/internal/db"
 	"github.com/Brownie44l1/chug/internal/handler"
 	"github.com/Brownie44l1/chug/internal/middleware"
+	"github.com/Brownie44l1/chug/internal/queue"
 	"github.com/Brownie44l1/chug/internal/redis"
 )
 
@@ -36,6 +37,16 @@ func main() {
 	defer func() {
 		if err := redisClient.Close(); err != nil {
 			log.Printf("error closing Redis connection: %v", err)
+		}
+	}()
+
+	// Initialize Background Queue
+	if err := queue.Init(cfg.RedisURL, cfg.QueueName); err != nil {
+		log.Fatalf("failed to initialize background queue: %v", err)
+	}
+	defer func() {
+		if err := queue.Close(); err != nil {
+			log.Printf("error closing queue client: %v", err)
 		}
 	}()
 
